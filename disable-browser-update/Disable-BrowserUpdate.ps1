@@ -202,22 +202,34 @@ function Get-BrowserVersion($Browser) {
 # 这里统一排除提权服务：它跟更新无关，是浏览器安装/卸载时用来提权的，禁掉会出问题。
 $script:ServiceBlacklist = @('*Elevation*', '*ElevationService')
 
+# 扫描缓存：Get-ScheduledTask 每次调用都有较大的固定开销，按「每浏览器 × 每模式」反复
+# 调用会让整个扫描慢到卡住 UI（实测 7 次调用 ~3.4s，一次性取回仅 ~0.5s）。这里在一次
+# 扫描开始时把全部服务与计划任务各查一次缓存下来，之后各浏览器都在内存里过滤。
+$script:AllServices = $null
+$script:AllTasks    = $null
+
+function Update-DeviceCache {
+    $script:AllServices = @(Get-Service -ErrorAction SilentlyContinue)
+    $script:AllTasks    = @(Get-ScheduledTask -ErrorAction SilentlyContinue)
+}
+
 function Get-BrowserServices($Browser) {
-    $found = @()
-    foreach ($pat in $Browser.ServicePatterns) {
-        $found += Get-Service -Name $pat -ErrorAction SilentlyContinue
-    }
-    $found = $found | Where-Object {
-        $svc = $_
-        -not ($script:ServiceBlacklist | Where-Object { $svc.Name -like $_ })
+    if ($null -eq $script:AllServices) { Update-DeviceCache }
+    if (-not $Browser.ServicePatterns.Count) { return @() }
+    $found = $script:AllServices | Where-Object {
+        $name = $_.Name
+        ($Browser.ServicePatterns | Where-Object { $name -like $_ }) -and
+        -not ($script:ServiceBlacklist | Where-Object { $name -like $_ })
     }
     return $found | Sort-Object Name -Unique
 }
 
 function Get-BrowserTasks($Browser) {
-    $found = @()
-    foreach ($pat in $Browser.TaskPatterns) {
-        $found += Get-ScheduledTask -TaskName $pat -ErrorAction SilentlyContinue
+    if ($null -eq $script:AllTasks) { Update-DeviceCache }
+    if (-not $Browser.TaskPatterns.Count) { return @() }
+    $found = $script:AllTasks | Where-Object {
+        $name = $_.TaskName
+        $Browser.TaskPatterns | Where-Object { $name -like $_ }
     }
     return $found | Sort-Object TaskName -Unique
 }
@@ -395,6 +407,7 @@ function Refresh-List {
     $list.Items.Clear()
     $status.Text = '正在检测...'
     $form.Refresh()
+    Update-DeviceCache   # 每次扫描开始时刷新一次服务/任务缓存，反映上一步操作后的最新状态
     foreach ($b in $script:Browsers) {
         $s = Get-BrowserStatus $b
         if (-not $s.Installed) { continue }   # 只显示已安装的
