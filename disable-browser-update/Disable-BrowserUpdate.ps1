@@ -56,7 +56,6 @@ $script:Browsers = @(
         PolicyValues    = @{
             'UpdateDefault'                              = 0   # 0 = 完全禁止更新
             'AutoUpdateCheckPeriodMinutes'               = 0   # 0 = 不做周期性检查
-            'DisableAutoUpdateChecksCheckboxValue'       = 1
             'Update{8A69D345-D564-463C-AFF1-A69D9E530F96}' = 0 # Chrome 的 AppID
         }
     }
@@ -102,7 +101,9 @@ $script:Browsers = @(
             "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe"
         )
         ServicePatterns = @('MozillaMaintenance')
-        TaskPatterns    = @('Firefox Default Browser Agent*')
+        # 注意：不要动「Firefox Default Browser Agent」任务，那是默认浏览器检测的遥测任务，
+        # 与更新无关。Firefox 的更新控制完全依靠下面的 DisableAppUpdate 策略。
+        TaskPatterns    = @()
         PolicyKey       = 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox'
         PolicyValues    = @{
             'DisableAppUpdate' = 1
@@ -197,10 +198,18 @@ function Get-BrowserVersion($Browser) {
     return $null
 }
 
+# 通配符匹配（新版 GoogleUpdater 的服务名带版本号，只能用通配符）有误伤风险，
+# 这里统一排除提权服务：它跟更新无关，是浏览器安装/卸载时用来提权的，禁掉会出问题。
+$script:ServiceBlacklist = @('*Elevation*', '*ElevationService')
+
 function Get-BrowserServices($Browser) {
     $found = @()
     foreach ($pat in $Browser.ServicePatterns) {
         $found += Get-Service -Name $pat -ErrorAction SilentlyContinue
+    }
+    $found = $found | Where-Object {
+        $svc = $_
+        -not ($script:ServiceBlacklist | Where-Object { $svc.Name -like $_ })
     }
     return $found | Sort-Object Name -Unique
 }
@@ -323,6 +332,14 @@ function Set-BrowserUpdate($Browser, [bool]$Disable, [System.Collections.ArrayLi
                         Remove-ItemProperty -Path $Browser.PolicyKey -Name $n -ErrorAction SilentlyContinue
                     }
                     [void]$Log.Add("  [策略] $($Browser.PolicyKey) -> 已清除")
+
+                    # 清完值后如果这个键既没有值也没有子键，就是我们建出来的空壳，一并删掉。
+                    # 只删空键，避免误删用户自己配置的其它策略。
+                    $k = Get-Item $Browser.PolicyKey -ErrorAction SilentlyContinue
+                    if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+                        Remove-Item -Path $Browser.PolicyKey -Force -ErrorAction SilentlyContinue
+                        [void]$Log.Add("  [策略] 空键已删除")
+                    }
                 }
             }
         } catch {
