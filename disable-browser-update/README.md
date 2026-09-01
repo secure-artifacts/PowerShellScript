@@ -64,26 +64,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "Disable-BrowserUpdate.ps1"
 
 点「恢复更新」会按备份值还原（备份丢失时按厂商默认值兜底），并清除写入的策略项。如果策略键在清空后变成空壳，会一并删除，不会留下垃圾。
 
-## 怎么确认真的生效了
-
-打开浏览器的「关于」页面时，可能仍会弹出 UAC 提权框（比如 `Microsoft Edge Update`）。**这恰恰说明禁用生效了** —— 正常情况下更新检查由常驻服务静默完成，不弹框；服务被禁用后，浏览器只能退回到按需提权的更新器，于是才有了这个弹窗。点「否」即可。
-
-要严格验证的话，看更新器记录的「最后成功检查」时间戳：
-
-```powershell
-Get-ChildItem 'HKLM:\SOFTWARE\WOW6432Node\BraveSoftware\Update\ClientState' | ForEach-Object {
-    $v = Get-ItemProperty $_.PSPath
-    [pscustomobject]@{
-        Ver  = $v.pv
-        Last = [DateTimeOffset]::FromUnixTimeSeconds([int64]$v.LastCheckSuccess).ToLocalTime()
-    }
-}
-```
-
-在打开「关于」页面前后各跑一次，时间戳没变说明检查被拦住了。把路径中的 `BraveSoftware\Update` 换成 `Microsoft\EdgeUpdate` 可查 Edge。
-
-> **注意**：Chrome 的新版 GoogleUpdater 不再往 `ClientState` 写这个值，改为记录在 `GoogleUpdater\updater.log` 中。
-
 ## 已知限制
 
 - **「检查」和「安装」是两回事。** Omaha 系更新器对**用户主动发起**的检查是刻意豁免频率限制的，所以手动打开「关于」页面时仍会产生一次真实的网络检查。真正阻止**安装**的是 `UpdateDefault=0` 策略。
