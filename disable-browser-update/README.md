@@ -100,14 +100,6 @@ Get-ChildItem 'HKLM:\SOFTWARE\WOW6432Node\BraveSoftware\Update\ClientState' | Fo
 
 如果只是嫌更新烦，**不建议长期禁用**。折中做法是禁用后定期手动检查。
 
-## 打包成 exe
-
-见 [`Build-Exe.ps1`](Build-Exe.ps1)，使用系统自带的 `csc.exe` 编译，不依赖任何第三方模块。
-
-**但请先了解代价**：本脚本的行为特征（停用系统服务 + 禁用计划任务 + 改策略注册表 + 请求管理员权限）正好落在杀毒软件启发式规则的可疑区间。打包成未签名的 exe 后，被 Defender 拦截或触发 SmartScreen 警告的概率相当高。**以明文 `.ps1` 运行反而更顺畅**，因为脚本是可审查的。
-
-如果只是自用，更推荐建一个指向 `powershell.exe` 的快捷方式（属性里勾选「以管理员身份运行」），体验与 exe 几乎无异，且零风险。
-
 ## 授权
 
 MIT
