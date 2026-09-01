@@ -36,7 +36,7 @@ $root = if ($PSScriptRoot) { $PSScriptRoot }
         elseif ($PSCommandPath) { Split-Path -Parent $PSCommandPath }
         else { (Get-Location).Path }
 if (-not $Source) { $Source = Join-Path $root 'Disable-BrowserUpdate.ps1' }
-if (-not $Output) { $Output = Join-Path $root 'DisableBrowserUpdate.exe' }
+if (-not $Output) { $Output = Join-Path $root '禁用浏览器更新.exe' }
 
 # ---------------------------------------------------------------- 环境检查
 if (-not (Test-Path $Source)) { throw "找不到源脚本: $Source" }
