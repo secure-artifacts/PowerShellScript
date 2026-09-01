@@ -18,17 +18,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # GitHub Release 附件名无法保留非 ASCII 字符（中文会被剥成 default.exe），
+      # 因此这里显式构建为英文名 DisableBrowserUpdate.exe 作为发布产物。
       - name: Build exe
         shell: pwsh
-        run: ./disable-browser-update/Build-Exe.ps1
+        run: ./disable-browser-update/Build-Exe.ps1 -Output "$PWD/DisableBrowserUpdate.exe"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: disable-browser-update/禁用浏览器更新.exe
+          subject-path: DisableBrowserUpdate.exe
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: disable-browser-update/禁用浏览器更新.exe
+          files: DisableBrowserUpdate.exe
           generate_release_notes: true
