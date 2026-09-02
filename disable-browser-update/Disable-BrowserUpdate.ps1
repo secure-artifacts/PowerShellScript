@@ -94,22 +94,6 @@ $script:Browsers = @(
         }
     }
     @{
-        Name            = 'Mozilla Firefox'
-        NamePattern     = '^Mozilla Firefox'          # DisplayName 带语言/位数后缀，如「Mozilla Firefox (x64 zh-CN)」
-        ExePaths        = @(
-            "$env:ProgramFiles\Mozilla Firefox\firefox.exe"
-            "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe"
-        )
-        ServicePatterns = @('MozillaMaintenance')
-        # 注意：不要动「Firefox Default Browser Agent」任务，那是默认浏览器检测的遥测任务，
-        # 与更新无关。Firefox 的更新控制完全依靠下面的 DisableAppUpdate 策略。
-        TaskPatterns    = @()
-        PolicyKey       = 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox'
-        PolicyValues    = @{
-            'DisableAppUpdate' = 1
-        }
-    }
-    @{
         Name            = 'Vivaldi'
         ExePaths        = @(
             "$env:LOCALAPPDATA\Vivaldi\Application\vivaldi.exe"
@@ -119,37 +103,6 @@ $script:Browsers = @(
         TaskPatterns    = @('VivaldiUpdateCheck*') # 只靠计划任务检查更新
         PolicyKey       = $null
         PolicyValues    = @{}
-    }
-    @{
-        Name            = 'Opera'
-        NamePattern     = '^Opera(\s+Stable)?\s'      # DisplayName 形如「Opera Stable 1xx.x.x.x」
-        ExePaths        = @(
-            "$env:LOCALAPPDATA\Programs\Opera\opera.exe"
-            "$env:ProgramFiles\Opera\opera.exe"
-            "${env:ProgramFiles(x86)}\Opera\opera.exe"
-        )
-        ServicePatterns = @()
-        TaskPatterns    = @('Opera scheduled*')
-        PolicyKey       = $null
-        PolicyValues    = @{}
-    }
-    @{
-        Name            = 'Yandex Browser'
-        NamePattern     = '^Yandex|^Яндекс'          # 系统级安装时 DisplayName 是「Yandex (All Users)」
-        ExePaths        = @(
-            "$env:ProgramFiles\Yandex\YandexBrowser\Application\browser.exe"
-            "${env:ProgramFiles(x86)}\Yandex\YandexBrowser\Application\browser.exe"
-            "$env:LOCALAPPDATA\Yandex\YandexBrowser\Application\browser.exe"
-        )
-        # 服务实际叫 YandexBrowserService，不带 Update 字样
-        ServicePatterns = @('YandexBrowser*', 'Yandex*Update*')
-        TaskPatterns    = @('*Yandex Browser*', 'YandexBrowserUpdate*')
-        # 未经验证：Yandex 更新器同为 Omaha 分支，键名按惯例推断，尚未实证
-        PolicyKey       = 'HKLM:\SOFTWARE\Policies\Yandex\Update'
-        PolicyValues    = @{
-            'UpdateDefault'                = 0
-            'AutoUpdateCheckPeriodMinutes' = 0
-        }
     }
 )
 
@@ -174,11 +127,21 @@ function Save-Backup([hashtable]$Data) {
 }
 
 # ---------------------------------------------------------------- 探测
-function Get-BrowserVersion($Browser) {
+# 根据 exe 所在路径判断安装范围：Program Files = 系统级，用户 AppData = 用户级。
+# 这个区分很关键：系统级能被策略彻底锁死，用户级的手动更新拦不住（详见 README）。
+function Get-InstallScope($Path) {
+    if (-not $Path) { return '' }
+    if ($Path -match '(?i)\\Program Files( \(x86\))?\\') { return '系统级' }
+    if ($Path -match '(?i)\\Users\\[^\\]+\\AppData\\')    { return '用户级' }
+    return '系统级'   # 其它系统路径按系统级处理
+}
+
+# 返回浏览器的安装信息：版本 + 安装范围；未安装返回 $null
+function Get-BrowserInstall($Browser) {
     foreach ($p in $Browser.ExePaths) {
         if ($p -and (Test-Path $p)) {
             $v = (Get-Item $p).VersionInfo.ProductVersion
-            if ($v) { return $v.Trim() }
+            if ($v) { return [pscustomobject]@{ Version = $v.Trim(); Scope = (Get-InstallScope $p) } }
         }
     }
     # 装在非标准路径时回退查注册表
@@ -191,10 +154,43 @@ function Get-BrowserVersion($Browser) {
     # 模式必须锚定，否则 'Microsoft Edge' 会误匹配到 'Microsoft Edge WebView2 Runtime'。
     $pattern = if ($Browser.NamePattern) { $Browser.NamePattern }
                else { '^' + [regex]::Escape($Browser.Name) + '$' }
-    $hit = Get-ItemProperty $uninstall -ErrorAction SilentlyContinue |
-           Where-Object { $_.DisplayName -match $pattern -and $_.DisplayVersion } |
-           Sort-Object DisplayVersion -Descending | Select-Object -First 1
-    if ($hit) { return $hit.DisplayVersion }
+    $hits = Get-ItemProperty $uninstall -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -match $pattern -and $_.DisplayVersion } |
+            Sort-Object DisplayVersion -Descending
+    # 关键：卸载注册表项在浏览器被删后常会残留（尤其手动删除时）。必须验证浏览器主程序
+    # exe 确实还在磁盘上，才认定为已安装 —— 否则会把卸载残留误报成已安装。
+    foreach ($hit in $hits) {
+        $exe = Get-InstalledExe $hit $Browser
+        if ($exe) { return [pscustomobject]@{ Version = $hit.DisplayVersion; Scope = (Get-InstallScope $exe) } }
+    }
+    return $null
+}
+
+# 从卸载注册表项定位浏览器主程序的真实 exe 路径；找不到（已删/残留项）返回 $null。
+# 依据是「浏览器可执行文件本身存在」，而非目录或 setup.exe —— 只删 exe 也能正确判为未安装。
+function Get-InstalledExe($Entry, $Browser) {
+    # 取该浏览器主程序的文件名（如 brave.exe / msedge.exe / browser.exe）
+    $leaves = @($Browser.ExePaths | ForEach-Object { Split-Path $_ -Leaf } | Sort-Object -Unique)
+
+    # 1) InstallLocation 目录下有没有浏览器主程序（覆盖非标准安装路径）
+    if ($Entry.InstallLocation) {
+        $loc = $Entry.InstallLocation.Trim('"').TrimEnd('\')
+        if ($loc) {
+            # 用字符串拼接而非 Join-Path：后者遇到不存在的盘符（如已拔出的移动盘）会抛错
+            foreach ($leaf in $leaves) {
+                if (Test-Path -LiteralPath "$loc\$leaf") { return "$loc\$leaf" }
+            }
+        }
+    }
+
+    # 2) DisplayIcon 常直接指向浏览器主程序 exe（带 ,0 图标索引），用它再验一次
+    foreach ($field in @($Entry.DisplayIcon, $Entry.UninstallString)) {
+        if (-not $field) { continue }
+        $m = [regex]::Match($field, '([A-Za-z]:\\[^"]*?\.exe)')
+        if ($m.Success -and (Test-Path -LiteralPath $m.Groups[1].Value)) {
+            if ($leaves -contains (Split-Path $m.Groups[1].Value -Leaf)) { return $m.Groups[1].Value }
+        }
+    }
     return $null
 }
 
@@ -245,10 +241,10 @@ function Test-PolicyApplied($Browser) {
 }
 
 function Get-BrowserStatus($Browser) {
-    $version = Get-BrowserVersion $Browser
-    if (-not $version) {
+    $install = Get-BrowserInstall $Browser
+    if (-not $install) {
         return [pscustomobject]@{
-            Name = $Browser.Name; Version = '-'; Installed = $false
+            Name = $Browser.Name; Version = '-'; Scope = ''; Installed = $false
             Status = '未安装'; Detail = ''
         }
     }
@@ -275,7 +271,7 @@ function Get-BrowserStatus($Browser) {
                else                     { '更新开启中' }
 
     return [pscustomobject]@{
-        Name = $Browser.Name; Version = $version; Installed = $true
+        Name = $Browser.Name; Version = $install.Version; Scope = $install.Scope; Installed = $true
         Status = $status; Detail = ($parts -join '，')
     }
 }
@@ -378,10 +374,11 @@ $list.FullRowSelect = $true
 $list.GridLines     = $true
 $list.MultiSelect   = $true
 $list.HideSelection = $false   # 焦点移到按钮上时仍保持选中行高亮，否则看不出操作对象
-[void]$list.Columns.Add('浏览器',   150)
-[void]$list.Columns.Add('版本',     140)
-[void]$list.Columns.Add('当前状态', 110)
-[void]$list.Columns.Add('更新组件', 355)
+[void]$list.Columns.Add('浏览器',   140)
+[void]$list.Columns.Add('版本',     120)
+[void]$list.Columns.Add('安装范围', 80)
+[void]$list.Columns.Add('当前状态', 100)
+[void]$list.Columns.Add('更新组件', 320)
 $form.Controls.Add($list)
 
 $logBox = New-Object System.Windows.Forms.TextBox
@@ -413,6 +410,7 @@ function Refresh-List {
         if (-not $s.Installed) { continue }   # 只显示已安装的
         $item = New-Object System.Windows.Forms.ListViewItem($s.Name)
         [void]$item.SubItems.Add($s.Version)
+        [void]$item.SubItems.Add($s.Scope)
         [void]$item.SubItems.Add($s.Status)
         [void]$item.SubItems.Add($s.Detail)
         $item.ForeColor = switch ($s.Status) {

@@ -12,14 +12,14 @@
 
 2. **光禁服务不够。** Chrome 启动时若发现更新器缺失，会自行重装，服务换个版本号又活了。必须同时写策略注册表才能真正兜住。
 
-3. **有些浏览器根本没有更新服务。** 比如 Vivaldi，只靠计划任务检查更新，禁服务对它完全无效。
+3. **触发点不止一个。** 光禁服务，浏览器还有计划任务、按需更新器等其它路径能拉起更新，必须一并处理。
 
 所以本工具采用三管齐下：
 
 | 手段 | 作用 |
 |---|---|
 | **更新服务** | 停止并设为「禁用」（服务名用通配符匹配，兼容新旧更新器） |
-| **计划任务** | 禁用（覆盖 Vivaldi 这类没有服务的浏览器） |
+| **计划任务** | 禁用每用户 / 机器级的更新检查任务 |
 | **策略注册表** | 写 `Policies` 键，防止浏览器启动时重装更新器 |
 
 ## 支持的浏览器
@@ -29,12 +29,9 @@
 | Google Chrome | `gupdate` / `gupdatem` / `GoogleUpdater*Service*` | ✓ | `Policies\Google\Update` |
 | Microsoft Edge | `edgeupdate` / `edgeupdatem` | ✓ | `Policies\Microsoft\EdgeUpdate` |
 | Brave | `brave` / `bravem` | ✓ | `Policies\BraveSoftware\Update` |
-| Mozilla Firefox | `MozillaMaintenance` | — | `Policies\Mozilla\Firefox` |
-| Vivaldi | — | `VivaldiUpdateCheck*` | — |
-| Opera | — | `Opera scheduled*` | — |
-| Yandex Browser | `YandexBrowser*` | ✓ | `Policies\Yandex\Update` ⚠️ |
+| Vivaldi | —（无更新服务） | `VivaldiUpdateCheck*` | —（无策略键） |
 
-⚠️ Yandex 的策略键是按 Omaha 惯例推断的，**尚未实证**。Chrome / Edge / Brave 三家的策略键均已确认（Brave 的路径是通过扫描 `goopdate.dll` 中硬编码的字符串验证的）。
+Chrome / Edge / Brave 三家的策略键均已确认有效（Brave 的路径是通过扫描 `goopdate.dll` 中硬编码的字符串验证的）。Vivaldi 没有更新服务、也没有策略键，只靠禁用计划任务拦截更新检查。
 
 ## 使用方法
 
@@ -66,10 +63,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "Disable-BrowserUpdate.ps1"
 
 ## 已知限制
 
-- **「检查」和「安装」是两回事。** Omaha 系更新器对**用户主动发起**的检查是刻意豁免频率限制的，所以手动打开「关于」页面时仍会产生一次真实的网络检查。真正阻止**安装**的是 `UpdateDefault=0` 策略。
+- **用户级安装的手动更新拦不住。** 界面「安装范围」列会标出每个浏览器是**系统级**还是**用户级**：
+  - **系统级**（装在 `Program Files`，需管理员安装）—— 策略 `UpdateDefault=0` 生效，后台和手动更新都能锁死。打开「关于」页面会显示「更新已被管理员禁用」。
+  - **用户级**（装在 `%LOCALAPPDATA%`，免管理员安装）—— 后台自动更新能被禁用任务拦住，但**手动打开「关于」页面触发的更新拦不住**（那条按需路径不认机器级策略）。
+  - 若要彻底锁定用户级浏览器，把它**卸载后以管理员重装成系统级**（见下方安装说明），或改用 ACL 硬锁。
+- **「检查」和「安装」是两回事。** 系统级下 `UpdateDefault=0` 会挡住安装（即使手动检查也会显示「已被管理员禁用」）。
 - **Edge 是 Windows 组件**，禁用更新后系统累积更新仍可能把它带回来。
-- **Firefox 的更新控制完全依赖 `DisableAppUpdate` 策略。** 本工具不会去动 `Firefox Default Browser Agent` 计划任务 —— 那是默认浏览器检测的遥测任务，与更新无关。
 - 提权服务（`*Elevation*`）已列入黑名单，永不禁用。它与更新无关，是浏览器安装/卸载时提权用的。
+
+## 装成系统级（推荐）
+
+用户级安装是因为当初没用管理员权限装。要彻底锁定，用管理员重装成系统级：
+
+```powershell
+# 先在 设置 → 应用 里卸载现有 Brave（数据保留在 %LOCALAPPDATA%，不受影响）
+# 再用管理员 PowerShell 装系统级：
+winget install --id Brave.Brave --exact --scope machine
+```
+
+装完验证 `Test-Path 'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe'` 返回 `True` 即为系统级。Chrome / Edge 同理（`--scope machine`）。
 
 ## ⚠️ 安全提示
 
